@@ -9,8 +9,13 @@ MainWindow::MainWindow(QWidget *parent)
     , m_mainLayout(nullptr)
     , m_targetGroup(nullptr)
     , m_targetInput(nullptr)
+    , m_cidrCombo(nullptr)
     , m_scanTypeCombo(nullptr)
     , m_timeoutSpin(nullptr)
+    , m_noResolveCheckbox(nullptr)
+    , m_outputGroup(nullptr)
+    , m_outputFileInput(nullptr)
+    , m_browseButton(nullptr)
     , m_buttonLayout(nullptr)
     , m_startButton(nullptr)
     , m_stopButton(nullptr)
@@ -42,35 +47,50 @@ void MainWindow::setupUI()
 
     // Target configuration group
     m_targetGroup = new QGroupBox("Target Configuration", this);
-    QVBoxLayout *targetLayout = new QVBoxLayout(m_targetGroup);
+    QGridLayout *targetLayout = new QGridLayout(m_targetGroup);
 
-    // Target input
-    QHBoxLayout *targetInputLayout = new QHBoxLayout();
-    targetInputLayout->addWidget(new QLabel("Target Network/IP:"));
-    m_targetInput = new QLineEdit("192.168.1.0/24", this);
-    m_targetInput->setPlaceholderText("e.g., 192.168.1.0/24 or 10.0.0.1-254");
-    targetInputLayout->addWidget(m_targetInput);
+    // Target input with CIDR dropdown
+    targetLayout->addWidget(new QLabel("Target Network/IP:"), 0, 0);
+    m_targetInput = new QLineEdit("192.168.1.0", this);
+    m_targetInput->setPlaceholderText("e.g., 192.168.1.0 or 10.0.0.1");
+    targetLayout->addWidget(m_targetInput, 0, 1);
+
+    targetLayout->addWidget(new QLabel("CIDR:"), 0, 2);
+    m_cidrCombo = new QComboBox(this);
+    m_cidrCombo->addItems({"/8", "/16", "/24", "/25", "/26", "/27", "/28", "/29", "/30"});
+    m_cidrCombo->setCurrentText("/24");
+    targetLayout->addWidget(m_cidrCombo, 0, 3);
 
     // Scan type
-    QHBoxLayout *scanTypeLayout = new QHBoxLayout();
-    scanTypeLayout->addWidget(new QLabel("Scan Type:"));
+    targetLayout->addWidget(new QLabel("Scan Type:"), 1, 0);
     m_scanTypeCombo = new QComboBox(this);
-    m_scanTypeCombo->addItems({"ARP Scan", "Ping Scan", "Fast Port Scan", "Comprehensive Scan"});
-    scanTypeLayout->addWidget(m_scanTypeCombo);
+    m_scanTypeCombo->addItems({"ARP Scan", "Ping Scan"});
+    targetLayout->addWidget(m_scanTypeCombo, 1, 1);
 
     // Timeout setting
-    QHBoxLayout *timeoutLayout = new QHBoxLayout();
-    timeoutLayout->addWidget(new QLabel("Timeout (ms):"));
+    targetLayout->addWidget(new QLabel("Timeout (ms):"), 1, 2);
     m_timeoutSpin = new QSpinBox(this);
     m_timeoutSpin->setRange(100, 10000);
     m_timeoutSpin->setValue(1000);
     m_timeoutSpin->setSuffix(" ms");
-    timeoutLayout->addWidget(m_timeoutSpin);
-    timeoutLayout->addStretch();
+    targetLayout->addWidget(m_timeoutSpin, 1, 3);
 
-    targetLayout->addLayout(targetInputLayout);
-    targetLayout->addLayout(scanTypeLayout);
-    targetLayout->addLayout(timeoutLayout);
+    // No resolve checkbox
+    m_noResolveCheckbox = new QCheckBox("No DNS resolution (-n)", this);
+    m_noResolveCheckbox->setChecked(true);
+    targetLayout->addWidget(m_noResolveCheckbox, 2, 0, 1, 2);
+
+    // Output configuration group
+    m_outputGroup = new QGroupBox("Output Configuration", this);
+    QHBoxLayout *outputLayout = new QHBoxLayout(m_outputGroup);
+
+    outputLayout->addWidget(new QLabel("Output File:"));
+    m_outputFileInput = new QLineEdit(this);
+    m_outputFileInput->setPlaceholderText("Optional: /path/to/output.txt");
+    outputLayout->addWidget(m_outputFileInput);
+
+    m_browseButton = new QPushButton("Browse...", this);
+    outputLayout->addWidget(m_browseButton);
 
     // Control buttons
     m_buttonLayout = new QHBoxLayout();
@@ -106,6 +126,7 @@ void MainWindow::setupUI()
 
     // Add all groups to main layout
     m_mainLayout->addWidget(m_targetGroup);
+    m_mainLayout->addWidget(m_outputGroup);
     m_mainLayout->addLayout(m_buttonLayout);
     m_mainLayout->addWidget(m_resultsGroup);
 
@@ -113,6 +134,7 @@ void MainWindow::setupUI()
     connect(m_startButton, &QPushButton::clicked, this, &MainWindow::onStartScan);
     connect(m_stopButton, &QPushButton::clicked, this, &MainWindow::onStopScan);
     connect(m_clearButton, &QPushButton::clicked, this, &MainWindow::onClearResults);
+    connect(m_browseButton, &QPushButton::clicked, this, &MainWindow::onBrowseOutputFile);
 }
 
 void MainWindow::setupMenuBar()
@@ -131,9 +153,16 @@ void MainWindow::setupMenuBar()
     connect(aboutAction, &QAction::triggered, this, [this]() {
         QMessageBox::about(this, "About NetDiscover Buddy",
                           "NetDiscover Buddy v1.0.0\n\n"
-                          "A Qt-based network discovery tool\n"
+                          "Network Discovery Tool\n"
+                          "Perform ARP scan or PING scan of a network to detect active hosts.\n\n"
+                          "Features:\n"
+                          "• ARP and PING scanning\n"
+                          "• CIDR network notation support\n"
+                          "• Output file export\n"
+                          "• No DNS resolution option (-n)\n\n"
                           "Built with Qt6 and C++\n\n"
-                          "© 2024 CyberOakAlpha");
+                          "Note: Actual scanning implementation will be added in the next phase.\n\n"
+                          "© 2024-2025 CyberOak By AlphaSecurity");
     });
 }
 
@@ -160,11 +189,37 @@ void MainWindow::onStartScan()
     m_statusLabel->setText("Scanning...");
 
     QString scanType = m_scanTypeCombo->currentText();
+    QString cidr = m_cidrCombo->currentText();
+    QString fullTarget = target + cidr;
     int timeout = m_timeoutSpin->value();
+    bool noResolve = m_noResolveCheckbox->isChecked();
+    QString outputFile = m_outputFileInput->text().trimmed();
+
+    // Build netdiscover command
+    QString command = "netdiscover";
+
+    if (scanType == "ARP Scan") {
+        command += " -r " + fullTarget;
+    } else if (scanType == "Ping Scan") {
+        command += " -p -r " + fullTarget;
+    }
+
+    if (noResolve) {
+        command += " -n";
+    }
+
+    if (!outputFile.isEmpty()) {
+        command += " > " + outputFile;
+    }
 
     m_resultsText->append(QString("=== Starting %1 ===").arg(scanType));
-    m_resultsText->append(QString("Target: %1").arg(target));
+    m_resultsText->append(QString("Target: %1").arg(fullTarget));
     m_resultsText->append(QString("Timeout: %1 ms").arg(timeout));
+    m_resultsText->append(QString("No DNS Resolution: %1").arg(noResolve ? "Yes" : "No"));
+    if (!outputFile.isEmpty()) {
+        m_resultsText->append(QString("Output File: %1").arg(outputFile));
+    }
+    m_resultsText->append(QString("Command: %1").arg(command));
     m_resultsText->append("Scanning in progress...\n");
 
     // TODO: Implement actual scanning logic here
@@ -188,4 +243,16 @@ void MainWindow::onClearResults()
     m_resultsText->clear();
     m_resultsText->setPlainText("Ready to scan. Configure your target and click 'Start Scan'.\n");
     m_statusLabel->setText("Ready");
+}
+
+void MainWindow::onBrowseOutputFile()
+{
+    QString fileName = QFileDialog::getSaveFileName(this,
+        "Select Output File",
+        QDir::homePath() + "/netdiscover_results.txt",
+        "Text files (*.txt);;All files (*.*)");
+
+    if (!fileName.isEmpty()) {
+        m_outputFileInput->setText(fileName);
+    }
 }

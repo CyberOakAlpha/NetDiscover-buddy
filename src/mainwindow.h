@@ -14,6 +14,9 @@
 #include <QComboBox>
 #include <QSpinBox>
 #include <QStatusBar>
+#include <QCheckBox>
+#include <QFileDialog>
+#include <QGridLayout>
 
 class MainWindow : public QMainWindow
 {
@@ -27,6 +30,7 @@ private slots:
     void onStartScan();
     void onStopScan();
     void onClearResults();
+    void onBrowseOutputFile();
 
 private:
     void setupUI();
@@ -40,8 +44,15 @@ private:
     // Target configuration
     QGroupBox *m_targetGroup;
     QLineEdit *m_targetInput;
+    QComboBox *m_cidrCombo;
     QComboBox *m_scanTypeCombo;
     QSpinBox *m_timeoutSpin;
+    QCheckBox *m_noResolveCheckbox;
+
+    // Output configuration
+    QGroupBox *m_outputGroup;
+    QLineEdit *m_outputFileInput;
+    QPushButton *m_browseButton;
 
     // Control buttons
     QHBoxLayout *m_buttonLayout;
