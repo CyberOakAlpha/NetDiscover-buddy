@@ -17,6 +17,8 @@
 #include <QCheckBox>
 #include <QFileDialog>
 #include <QGridLayout>
+#include <QProcess>
+#include <QTimer>
 
 class MainWindow : public QMainWindow
 {
@@ -31,6 +33,9 @@ private slots:
     void onStopScan();
     void onClearResults();
     void onBrowseOutputFile();
+    void onProcessOutput();
+    void onProcessFinished(int exitCode, QProcess::ExitStatus exitStatus);
+    void onProcessError(QProcess::ProcessError error);
 
 private:
     void setupUI();
@@ -67,6 +72,10 @@ private:
 
     // Status
     QLabel *m_statusLabel;
+
+    // Process management
+    QProcess *m_scanProcess;
+    QString m_outputFile;
 };
 
 #endif // MAINWINDOW_H

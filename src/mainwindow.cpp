@@ -2,6 +2,10 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QApplication>
+#include <QDir>
+#include <QFile>
+#include <QTextStream>
+#include <QTextCursor>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -24,6 +28,7 @@ MainWindow::MainWindow(QWidget *parent)
     , m_resultsText(nullptr)
     , m_progressBar(nullptr)
     , m_statusLabel(nullptr)
+    , m_scanProcess(nullptr)
 {
     setupUI();
     setupMenuBar();
@@ -32,6 +37,12 @@ MainWindow::MainWindow(QWidget *parent)
     setWindowTitle("NetDiscover Buddy - Network Discovery Tool");
     setMinimumSize(800, 600);
     resize(1000, 700);
+
+    // Initialize process
+    m_scanProcess = new QProcess(this);
+    connect(m_scanProcess, &QProcess::readyReadStandardOutput, this, &MainWindow::onProcessOutput);
+    connect(m_scanProcess, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, &MainWindow::onProcessFinished);
+    connect(m_scanProcess, &QProcess::errorOccurred, this, &MainWindow::onProcessError);
 }
 
 MainWindow::~MainWindow()
@@ -160,8 +171,9 @@ void MainWindow::setupMenuBar()
                           "• CIDR network notation support\n"
                           "• Output file export\n"
                           "• No DNS resolution option (-n)\n\n"
-                          "Built with Qt6 and C++\n\n"
-                          "Note: Actual scanning implementation will be added in the next phase.\n\n"
+                          "Requirements:\n"
+                          "• netdiscover package must be installed\n"
+                          "• Root privileges may be required for scanning\n\n"
                           "© 2024-2025 CyberOak By AlphaSecurity");
     });
 }
@@ -181,6 +193,25 @@ void MainWindow::onStartScan()
         return;
     }
 
+    // Check if netdiscover is available
+    if (QProcess::execute("which", QStringList() << "netdiscover") != 0) {
+        QMessageBox::critical(this, "NetDiscover Not Found",
+                              "netdiscover command not found in PATH.\n\n"
+                              "Please install netdiscover using your package manager:\n\n"
+                              "• Ubuntu/Debian: sudo apt install netdiscover\n"
+                              "• Fedora/RHEL: sudo dnf install netdiscover\n"
+                              "• openSUSE: sudo zypper install netdiscover\n"
+                              "• Arch Linux: sudo pacman -S netdiscover\n\n"
+                              "Note: netdiscover requires root privileges to run.");
+        return;
+    }
+
+    // Stop any running scan
+    if (m_scanProcess->state() != QProcess::NotRunning) {
+        m_scanProcess->kill();
+        m_scanProcess->waitForFinished(3000);
+    }
+
     m_startButton->setEnabled(false);
     m_stopButton->setEnabled(true);
     m_progressBar->setVisible(true);
@@ -191,45 +222,49 @@ void MainWindow::onStartScan()
     QString scanType = m_scanTypeCombo->currentText();
     QString cidr = m_cidrCombo->currentText();
     QString fullTarget = target + cidr;
-    int timeout = m_timeoutSpin->value();
     bool noResolve = m_noResolveCheckbox->isChecked();
-    QString outputFile = m_outputFileInput->text().trimmed();
+    m_outputFile = m_outputFileInput->text().trimmed();
 
-    // Build netdiscover command
-    QString command = "netdiscover";
+    // Build netdiscover arguments
+    QStringList arguments;
+    arguments << "-r" << fullTarget;
 
-    if (scanType == "ARP Scan") {
-        command += " -r " + fullTarget;
-    } else if (scanType == "Ping Scan") {
-        command += " -p -r " + fullTarget;
+    if (scanType == "Ping Scan") {
+        arguments << "-p";
     }
 
     if (noResolve) {
-        command += " -n";
+        arguments << "-n";
     }
 
-    if (!outputFile.isEmpty()) {
-        command += " > " + outputFile;
-    }
+    // Add passive mode to prevent hanging
+    arguments << "-P";
 
     m_resultsText->append(QString("=== Starting %1 ===").arg(scanType));
     m_resultsText->append(QString("Target: %1").arg(fullTarget));
-    m_resultsText->append(QString("Timeout: %1 ms").arg(timeout));
     m_resultsText->append(QString("No DNS Resolution: %1").arg(noResolve ? "Yes" : "No"));
-    if (!outputFile.isEmpty()) {
-        m_resultsText->append(QString("Output File: %1").arg(outputFile));
+    if (!m_outputFile.isEmpty()) {
+        m_resultsText->append(QString("Output File: %1").arg(m_outputFile));
     }
-    m_resultsText->append(QString("Command: %1").arg(command));
+    m_resultsText->append(QString("Command: netdiscover %1").arg(arguments.join(" ")));
     m_resultsText->append("Scanning in progress...\n");
 
-    // TODO: Implement actual scanning logic here
-    // For now, we'll just show a placeholder message
-    m_resultsText->append("Note: Actual scanning implementation will be added in the next phase.");
-    m_resultsText->append("This is a basic GUI framework for the NetDiscover Buddy application.\n");
+    // Start the netdiscover process
+    m_scanProcess->start("netdiscover", arguments);
+
+    if (!m_scanProcess->waitForStarted(5000)) {
+        QMessageBox::critical(this, "Scan Failed", "Failed to start netdiscover process.");
+        onStopScan();
+    }
 }
 
 void MainWindow::onStopScan()
 {
+    if (m_scanProcess->state() != QProcess::NotRunning) {
+        m_scanProcess->kill();
+        m_scanProcess->waitForFinished(3000);
+    }
+
     m_startButton->setEnabled(true);
     m_stopButton->setEnabled(false);
     m_progressBar->setVisible(false);
@@ -255,4 +290,86 @@ void MainWindow::onBrowseOutputFile()
     if (!fileName.isEmpty()) {
         m_outputFileInput->setText(fileName);
     }
+}
+
+void MainWindow::onProcessOutput()
+{
+    QByteArray data = m_scanProcess->readAllStandardOutput();
+    QString output = QString::fromUtf8(data);
+
+    // Parse and display output
+    QStringList lines = output.split('\n', Qt::SkipEmptyParts);
+    for (const QString &line : lines) {
+        QString trimmedLine = line.trimmed();
+        if (!trimmedLine.isEmpty()) {
+            m_resultsText->append(trimmedLine);
+        }
+    }
+
+    // Auto-scroll to bottom
+    QTextCursor cursor = m_resultsText->textCursor();
+    cursor.movePosition(QTextCursor::End);
+    m_resultsText->setTextCursor(cursor);
+}
+
+void MainWindow::onProcessFinished(int exitCode, QProcess::ExitStatus exitStatus)
+{
+    m_startButton->setEnabled(true);
+    m_stopButton->setEnabled(false);
+    m_progressBar->setVisible(false);
+
+    if (exitStatus == QProcess::CrashExit) {
+        m_statusLabel->setText("Scan crashed");
+        m_resultsText->append("=== Scan Process Crashed ===\n");
+    } else if (exitCode == 0) {
+        m_statusLabel->setText("Scan completed successfully");
+        m_resultsText->append("=== Scan Completed Successfully ===\n");
+
+        // Save to output file if specified
+        if (!m_outputFile.isEmpty()) {
+            QFile file(m_outputFile);
+            if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+                QTextStream out(&file);
+                out << m_resultsText->toPlainText();
+                m_resultsText->append(QString("Results saved to: %1").arg(m_outputFile));
+            } else {
+                m_resultsText->append(QString("Failed to save to: %1").arg(m_outputFile));
+            }
+        }
+    } else {
+        m_statusLabel->setText(QString("Scan failed (exit code: %1)").arg(exitCode));
+        m_resultsText->append(QString("=== Scan Failed (exit code: %1) ===\n").arg(exitCode));
+    }
+}
+
+void MainWindow::onProcessError(QProcess::ProcessError error)
+{
+    m_startButton->setEnabled(true);
+    m_stopButton->setEnabled(false);
+    m_progressBar->setVisible(false);
+
+    QString errorString;
+    switch (error) {
+    case QProcess::FailedToStart:
+        errorString = "Failed to start netdiscover. Check if it's installed.";
+        break;
+    case QProcess::Crashed:
+        errorString = "netdiscover process crashed.";
+        break;
+    case QProcess::Timedout:
+        errorString = "netdiscover process timed out.";
+        break;
+    case QProcess::WriteError:
+        errorString = "Write error occurred.";
+        break;
+    case QProcess::ReadError:
+        errorString = "Read error occurred.";
+        break;
+    default:
+        errorString = "Unknown error occurred.";
+        break;
+    }
+
+    m_statusLabel->setText("Scan error");
+    m_resultsText->append(QString("=== Error: %1 ===\n").arg(errorString));
 }
