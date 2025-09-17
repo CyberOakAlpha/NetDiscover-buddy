@@ -19,6 +19,8 @@
 #include <QGridLayout>
 #include <QProcess>
 #include <QTimer>
+#include <QInputDialog>
+#include <QLineEdit>
 
 class MainWindow : public QMainWindow
 {
@@ -36,6 +38,7 @@ private slots:
     void onProcessOutput();
     void onProcessFinished(int exitCode, QProcess::ExitStatus exitStatus);
     void onProcessError(QProcess::ProcessError error);
+    void onSudoProcessOutput();
 
 private:
     void setupUI();
@@ -76,6 +79,11 @@ private:
     // Process management
     QProcess *m_scanProcess;
     QString m_outputFile;
+    QString m_sudoPassword;
+
+    // Helper methods
+    QString promptForSudoPassword();
+    bool testSudoPassword(const QString &password);
 };
 
 #endif // MAINWINDOW_H

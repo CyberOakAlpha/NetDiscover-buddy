@@ -6,6 +6,7 @@
 #include <QFile>
 #include <QTextStream>
 #include <QTextCursor>
+#include <QInputDialog>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -206,6 +207,21 @@ void MainWindow::onStartScan()
         return;
     }
 
+    // Prompt for sudo password
+    QString password = promptForSudoPassword();
+    if (password.isEmpty()) {
+        return; // User cancelled
+    }
+
+    // Test sudo password
+    if (!testSudoPassword(password)) {
+        QMessageBox::critical(this, "Authentication Failed",
+                              "Incorrect sudo password. Please try again.");
+        return;
+    }
+
+    m_sudoPassword = password;
+
     // Stop any running scan
     if (m_scanProcess->state() != QProcess::NotRunning) {
         m_scanProcess->kill();
@@ -227,7 +243,7 @@ void MainWindow::onStartScan()
 
     // Build netdiscover arguments
     QStringList arguments;
-    arguments << "-r" << fullTarget;
+    arguments << "netdiscover" << "-r" << fullTarget;
 
     if (scanType == "Ping Scan") {
         arguments << "-p";
@@ -246,16 +262,28 @@ void MainWindow::onStartScan()
     if (!m_outputFile.isEmpty()) {
         m_resultsText->append(QString("Output File: %1").arg(m_outputFile));
     }
-    m_resultsText->append(QString("Command: netdiscover %1").arg(arguments.join(" ")));
-    m_resultsText->append("Scanning in progress...\n");
+    m_resultsText->append(QString("Command: sudo %1").arg(arguments.join(" ")));
+    m_resultsText->append("Authenticating and scanning in progress...\n");
 
-    // Start the netdiscover process
-    m_scanProcess->start("netdiscover", arguments);
+    // Disconnect previous connections and connect for sudo handling
+    disconnect(m_scanProcess, &QProcess::readyReadStandardOutput, this, &MainWindow::onProcessOutput);
+    connect(m_scanProcess, &QProcess::readyReadStandardOutput, this, &MainWindow::onSudoProcessOutput);
+
+    // Start sudo with netdiscover
+    m_scanProcess->start("sudo", QStringList() << "-S" << arguments);
 
     if (!m_scanProcess->waitForStarted(5000)) {
-        QMessageBox::critical(this, "Scan Failed", "Failed to start netdiscover process.");
+        QMessageBox::critical(this, "Scan Failed", "Failed to start sudo process.");
         onStopScan();
+        return;
     }
+
+    // Write password to sudo
+    m_scanProcess->write((m_sudoPassword + "\n").toUtf8());
+    m_scanProcess->closeWriteChannel();
+
+    // Clear password from memory for security
+    m_sudoPassword.clear();
 }
 
 void MainWindow::onStopScan()
@@ -265,12 +293,19 @@ void MainWindow::onStopScan()
         m_scanProcess->waitForFinished(3000);
     }
 
+    // Reconnect the normal output signal
+    disconnect(m_scanProcess, &QProcess::readyReadStandardOutput, this, &MainWindow::onSudoProcessOutput);
+    connect(m_scanProcess, &QProcess::readyReadStandardOutput, this, &MainWindow::onProcessOutput);
+
     m_startButton->setEnabled(true);
     m_stopButton->setEnabled(false);
     m_progressBar->setVisible(false);
 
     m_statusLabel->setText("Scan stopped");
     m_resultsText->append("=== Scan Stopped ===\n");
+
+    // Clear any stored password for security
+    m_sudoPassword.clear();
 }
 
 void MainWindow::onClearResults()
@@ -372,4 +407,65 @@ void MainWindow::onProcessError(QProcess::ProcessError error)
 
     m_statusLabel->setText("Scan error");
     m_resultsText->append(QString("=== Error: %1 ===\n").arg(errorString));
+}
+
+void MainWindow::onSudoProcessOutput()
+{
+    QByteArray data = m_scanProcess->readAllStandardOutput();
+    QString output = QString::fromUtf8(data);
+
+    // Filter out sudo password prompt
+    QStringList lines = output.split('\n', Qt::SkipEmptyParts);
+    for (const QString &line : lines) {
+        QString trimmedLine = line.trimmed();
+        // Skip sudo password prompts and empty lines
+        if (!trimmedLine.isEmpty() &&
+            !trimmedLine.contains("[sudo]") &&
+            !trimmedLine.contains("password for")) {
+            m_resultsText->append(trimmedLine);
+        }
+    }
+
+    // Auto-scroll to bottom
+    QTextCursor cursor = m_resultsText->textCursor();
+    cursor.movePosition(QTextCursor::End);
+    m_resultsText->setTextCursor(cursor);
+}
+
+QString MainWindow::promptForSudoPassword()
+{
+    bool ok;
+    QString password = QInputDialog::getText(this,
+        "Sudo Authentication Required",
+        "netdiscover requires root privileges.\n"
+        "Please enter your sudo password:",
+        QLineEdit::Password,
+        QString(),
+        &ok);
+
+    if (!ok) {
+        return QString(); // User cancelled
+    }
+
+    return password;
+}
+
+bool MainWindow::testSudoPassword(const QString &password)
+{
+    QProcess testProcess;
+    testProcess.start("sudo", QStringList() << "-S" << "echo" << "test");
+
+    if (!testProcess.waitForStarted(3000)) {
+        return false;
+    }
+
+    testProcess.write((password + "\n").toUtf8());
+    testProcess.closeWriteChannel();
+
+    if (!testProcess.waitForFinished(5000)) {
+        testProcess.kill();
+        return false;
+    }
+
+    return testProcess.exitCode() == 0;
 }
